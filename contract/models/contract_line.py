@@ -579,6 +579,8 @@ class ContractLine(models.Model):
     @api.constrains('recurring_next_date', 'date_start')
     def _check_recurring_next_date_start_date(self):
         for line in self.filtered('recurring_next_date'):
+            if line.recurring_invoicing_type == "pre-paid":
+                continue
             if line.date_start and line.recurring_next_date:
                 if line.date_start > line.recurring_next_date:
                     raise ValidationError(

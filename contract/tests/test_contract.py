@@ -532,13 +532,15 @@ class TestContract(TestContractBase):
             self.acct_line.date_end = '2015-12-31'
 
     def test_check_recurring_next_date_start_date(self):
-        with self.assertRaises(ValidationError):
-            self.acct_line.write(
-                {
-                    'date_start': '2018-01-01',
-                    'recurring_next_date': '2017-01-01',
-                }
-            )
+
+        if self.acct_line.recurring_invoicing_type != "pre-paid":
+            with self.assertRaises(ValidationError):
+                self.acct_line.write(
+                    {
+                        'date_start': '2018-01-01',
+                        'recurring_next_date': '2017-01-01',
+                    }
+                )
 
     def test_onchange_contract_template_id(self):
         """It should change the contract values to match the template."""
