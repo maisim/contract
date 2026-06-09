@@ -384,12 +384,13 @@ invoicing functions. Also you can print and send by email contract report.</p>
 <ul class="simple">
 <li><a class="reference internal" href="#configuration" id="toc-entry-1">Configuration</a></li>
 <li><a class="reference internal" href="#usage" id="toc-entry-2">Usage</a></li>
-<li><a class="reference internal" href="#known-issues-roadmap" id="toc-entry-3">Known issues / Roadmap</a></li>
-<li><a class="reference internal" href="#bug-tracker" id="toc-entry-4">Bug Tracker</a></li>
-<li><a class="reference internal" href="#credits" id="toc-entry-5">Credits</a><ul>
-<li><a class="reference internal" href="#authors" id="toc-entry-6">Authors</a></li>
-<li><a class="reference internal" href="#contributors" id="toc-entry-7">Contributors</a></li>
-<li><a class="reference internal" href="#maintainers" id="toc-entry-8">Maintainers</a></li>
+<li><a class="reference internal" href="#data-fix-after-migration-from-12-0-to-16-0" id="toc-entry-3">Data fix after migration from 12.0 to 16.0</a></li>
+<li><a class="reference internal" href="#known-issues-roadmap" id="toc-entry-4">Known issues / Roadmap</a></li>
+<li><a class="reference internal" href="#bug-tracker" id="toc-entry-5">Bug Tracker</a></li>
+<li><a class="reference internal" href="#credits" id="toc-entry-6">Credits</a><ul>
+<li><a class="reference internal" href="#authors" id="toc-entry-7">Authors</a></li>
+<li><a class="reference internal" href="#contributors" id="toc-entry-8">Contributors</a></li>
+<li><a class="reference internal" href="#maintainers" id="toc-entry-9">Maintainers</a></li>
 </ul>
 </li>
 </ul>
@@ -436,15 +437,139 @@ To use it, just select the template on the contract and fields will be filled au
 <img alt="https://raw.githubusercontent.com/OCA/contract/16.0/contract/static/src/screenshots/portal-list.png" src="https://raw.githubusercontent.com/OCA/contract/16.0/contract/static/src/screenshots/portal-list.png" />
 <img alt="https://raw.githubusercontent.com/OCA/contract/16.0/contract/static/src/screenshots/portal-detail.png" src="https://raw.githubusercontent.com/OCA/contract/16.0/contract/static/src/screenshots/portal-detail.png" />
 </div>
+<div class="section" id="data-fix-after-migration-from-12-0-to-16-0">
+<h2><a class="toc-backref" href="#toc-entry-3">Data fix after migration from 12.0 to 16.0</a></h2>
+<p>After migrating from 12.0 to 16.0, some contract lines may have inconsistent
+values that violate the <tt class="docutils literal">_check_last_date_invoiced</tt> constraint:</p>
+<ul class="simple">
+<li><tt class="docutils literal">date_end &lt; last_date_invoiced</tt> — the line was invoiced past its end date.</li>
+<li><tt class="docutils literal">recurring_next_date &lt;= last_date_invoiced</tt> — the next invoice date is stale
+(equal to the last invoice date) because <tt class="docutils literal">_update_recurring_next_date</tt> no
+longer writes both fields atomically.</li>
+<li><tt class="docutils literal">last_date_invoiced &lt;= date_end &lt; today</tt> — the end date is in the past;
+the line must be closed and auto-renew disabled to prevent the
+<tt class="docutils literal">cron_renew_contract_line</tt> from cascading year-by-year.</li>
+</ul>
+<p>These inconsistencies block any ORM write to the affected lines, and may
+trigger unwanted catch-up invoicing or auto-renewal cascades when fixed.</p>
+<p>A maintenance script is available to diagnose and fix these lines.
+Set <tt class="docutils literal">DRY_RUN = True</tt> to preview the changes, then <tt class="docutils literal">DRY_RUN = False</tt> to
+apply them via direct SQL (bypassing ORM constraints).
+Only active, non-terminated contracts are processed.</p>
+<pre class="code python literal-block">
+<span class="c1"># Run in an Odoo shell:</span><span class="w">
+</span><span class="c1">#   exec(open(&quot;/path/to/fix_contract_lines.py&quot;).read())</span><span class="w">
+
+</span><span class="kn">from</span><span class="w"> </span><span class="nn">dateutil.relativedelta</span><span class="w"> </span><span class="kn">import</span> <span class="n">relativedelta</span><span class="w">
+</span><span class="kn">from</span><span class="w"> </span><span class="nn">odoo</span><span class="w"> </span><span class="kn">import</span> <span class="n">fields</span><span class="w">
+
+</span><span class="n">DRY_RUN</span> <span class="o">=</span> <span class="kc">True</span><span class="w">
+
+</span><span class="n">ContractLine</span> <span class="o">=</span> <span class="n">env</span><span class="p">[</span><span class="s2">&quot;contract.line&quot;</span><span class="p">]</span><span class="w">
+</span><span class="n">today</span> <span class="o">=</span> <span class="n">fields</span><span class="o">.</span><span class="n">Date</span><span class="o">.</span><span class="n">context_today</span><span class="p">(</span><span class="n">env</span><span class="o">.</span><span class="n">user</span><span class="p">)</span><span class="w">
+
+</span><span class="c1"># Only active, non-terminated contracts</span><span class="w">
+</span><span class="n">lines</span> <span class="o">=</span> <span class="n">ContractLine</span><span class="o">.</span><span class="n">search</span><span class="p">([</span><span class="w">
+</span>    <span class="p">(</span><span class="s2">&quot;last_date_invoiced&quot;</span><span class="p">,</span> <span class="s2">&quot;!=&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">),</span><span class="w">
+</span>    <span class="p">(</span><span class="s2">&quot;contract_id.active&quot;</span><span class="p">,</span> <span class="s2">&quot;=&quot;</span><span class="p">,</span> <span class="kc">True</span><span class="p">),</span><span class="w">
+</span>    <span class="p">(</span><span class="s2">&quot;contract_id.is_terminated&quot;</span><span class="p">,</span> <span class="s2">&quot;=&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">),</span><span class="w">
+</span><span class="p">])</span><span class="w">
+
+</span><span class="c1"># --- 1a: date_end &lt; last_date_invoiced (invoiced past end date) ---</span><span class="w">
+</span><span class="n">fix_1a</span> <span class="o">=</span> <span class="n">lines</span><span class="o">.</span><span class="n">filtered</span><span class="p">(</span><span class="k">lambda</span> <span class="n">l</span><span class="p">:</span> <span class="n">l</span><span class="o">.</span><span class="n">date_end</span> <span class="ow">and</span> <span class="n">l</span><span class="o">.</span><span class="n">date_end</span> <span class="o">&lt;</span> <span class="n">l</span><span class="o">.</span><span class="n">last_date_invoiced</span><span class="p">)</span><span class="w">
+
+</span><span class="c1"># --- 1b: recurring_next_date &lt;= last_date_invoiced (line_recurrence=True) ---</span><span class="w">
+</span><span class="c1"># Only for genuinely active lines: date_end is NULL or in the future.</span><span class="w">
+</span><span class="c1"># Lines with past date_end are handled by 1c below (close + disable auto-renew).</span><span class="w">
+</span><span class="n">fix_1b</span> <span class="o">=</span> <span class="n">ContractLine</span><span class="w">
+</span><span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">lines</span><span class="p">:</span><span class="w">
+</span>    <span class="k">if</span> <span class="ow">not</span> <span class="n">line</span><span class="o">.</span><span class="n">contract_id</span><span class="o">.</span><span class="n">line_recurrence</span><span class="p">:</span><span class="w">
+</span>        <span class="k">continue</span><span class="w">
+</span>    <span class="k">if</span> <span class="n">line</span><span class="o">.</span><span class="n">date_end</span> <span class="ow">and</span> <span class="n">line</span><span class="o">.</span><span class="n">date_end</span> <span class="o">&lt;</span> <span class="n">today</span><span class="p">:</span><span class="w">
+</span>        <span class="k">continue</span><span class="w">
+</span>    <span class="k">if</span> <span class="n">line</span><span class="o">.</span><span class="n">recurring_next_date</span> <span class="ow">and</span> <span class="n">line</span><span class="o">.</span><span class="n">recurring_next_date</span> <span class="o">&lt;=</span> <span class="n">line</span><span class="o">.</span><span class="n">last_date_invoiced</span><span class="p">:</span><span class="w">
+</span>        <span class="n">fix_1b</span> <span class="o">|=</span> <span class="n">line</span><span class="w">
+
+</span><span class="c1"># --- 1c: past date_end (close + disable auto-renew) ---</span><span class="w">
+</span><span class="c1"># Close lines where date_end is in the past.  Disable auto-renew to prevent</span><span class="w">
+</span><span class="c1"># cron_renew_contract_line from cascading year-by-year.</span><span class="w">
+</span><span class="n">fix_1c</span> <span class="o">=</span> <span class="n">ContractLine</span><span class="w">
+</span><span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">lines</span><span class="p">:</span><span class="w">
+</span>    <span class="k">if</span> <span class="p">(</span><span class="w">
+</span>        <span class="n">line</span><span class="o">.</span><span class="n">date_end</span><span class="w">
+</span>        <span class="ow">and</span> <span class="n">line</span><span class="o">.</span><span class="n">last_date_invoiced</span> <span class="o">&lt;=</span> <span class="n">line</span><span class="o">.</span><span class="n">date_end</span><span class="w">
+</span>        <span class="ow">and</span> <span class="n">line</span><span class="o">.</span><span class="n">date_end</span> <span class="o">&lt;</span> <span class="n">today</span><span class="w">
+</span>    <span class="p">):</span><span class="w">
+</span>        <span class="n">fix_1c</span> <span class="o">|=</span> <span class="n">line</span><span class="w">
+
+</span><span class="n">all_fix</span> <span class="o">=</span> <span class="n">fix_1a</span> <span class="o">|</span> <span class="n">fix_1b</span> <span class="o">|</span> <span class="n">fix_1c</span><span class="w">
+</span><span class="n">impacted</span> <span class="o">=</span> <span class="n">all_fix</span><span class="o">.</span><span class="n">mapped</span><span class="p">(</span><span class="s2">&quot;contract_id&quot;</span><span class="p">)</span><span class="w">
+</span><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Impacted contracts: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">impacted</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+</span><span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="n">impacted</span><span class="p">:</span><span class="w">
+</span>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  ID=</span><span class="si">{</span><span class="n">c</span><span class="o">.</span><span class="n">id</span><span class="si">}</span><span class="s2">  '</span><span class="si">{</span><span class="n">c</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">'  line_recurrence=</span><span class="si">{</span><span class="n">c</span><span class="o">.</span><span class="n">line_recurrence</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span><span class="w">
+
+</span><span class="n">updates</span> <span class="o">=</span> <span class="p">[]</span>  <span class="c1"># (line_id, field, new_value)</span><span class="w">
+
+</span><span class="c1"># --- 1a: date_end &lt; last_date_invoiced (extend end date) ---</span><span class="w">
+</span><span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">fix_1a</span><span class="p">:</span><span class="w">
+</span>    <span class="n">updates</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">line</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;date_end&quot;</span><span class="p">,</span> <span class="n">line</span><span class="o">.</span><span class="n">last_date_invoiced</span><span class="p">))</span><span class="w">
+
+</span><span class="c1"># --- 1b: recurring_next_date &lt;= last_date_invoiced (recompute + advance) ---</span><span class="w">
+</span><span class="c1"># These are stale values (equal to last_date_invoiced from months/years ago).</span><span class="w">
+</span><span class="c1"># Advancing to today avoids the cron catching up all missed periods at once.</span><span class="w">
+</span><span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">fix_1b</span><span class="p">:</span><span class="w">
+</span>    <span class="n">npds</span> <span class="o">=</span> <span class="n">line</span><span class="o">.</span><span class="n">next_period_date_start</span><span class="w">
+</span>    <span class="n">new_rnd</span> <span class="o">=</span> <span class="n">line</span><span class="o">.</span><span class="n">get_next_invoice_date</span><span class="p">(</span><span class="w">
+</span>        <span class="n">npds</span><span class="p">,</span> <span class="n">line</span><span class="o">.</span><span class="n">recurring_invoicing_type</span><span class="p">,</span> <span class="n">line</span><span class="o">.</span><span class="n">recurring_invoicing_offset</span><span class="p">,</span><span class="w">
+</span>        <span class="n">line</span><span class="o">.</span><span class="n">recurring_rule_type</span><span class="p">,</span> <span class="n">line</span><span class="o">.</span><span class="n">recurring_interval</span><span class="p">,</span> <span class="n">max_date_end</span><span class="o">=</span><span class="n">line</span><span class="o">.</span><span class="n">date_end</span><span class="p">,</span><span class="w">
+</span>    <span class="p">)</span><span class="w">
+</span>    <span class="k">if</span> <span class="n">new_rnd</span> <span class="ow">and</span> <span class="n">new_rnd</span> <span class="o">&lt;</span> <span class="n">today</span><span class="p">:</span><span class="w">
+</span>        <span class="n">delta</span> <span class="o">=</span> <span class="n">line</span><span class="o">.</span><span class="n">get_relative_delta</span><span class="p">(</span><span class="n">line</span><span class="o">.</span><span class="n">recurring_rule_type</span><span class="p">,</span> <span class="n">line</span><span class="o">.</span><span class="n">recurring_interval</span><span class="p">)</span><span class="w">
+</span>        <span class="k">while</span> <span class="n">new_rnd</span> <span class="ow">and</span> <span class="n">new_rnd</span> <span class="o">&lt;</span> <span class="n">today</span><span class="p">:</span><span class="w">
+</span>            <span class="n">npds</span> <span class="o">=</span> <span class="n">npds</span> <span class="o">+</span> <span class="n">delta</span><span class="w">
+</span>            <span class="n">new_rnd</span> <span class="o">=</span> <span class="n">line</span><span class="o">.</span><span class="n">get_next_invoice_date</span><span class="p">(</span><span class="w">
+</span>                <span class="n">npds</span><span class="p">,</span> <span class="n">line</span><span class="o">.</span><span class="n">recurring_invoicing_type</span><span class="p">,</span> <span class="n">line</span><span class="o">.</span><span class="n">recurring_invoicing_offset</span><span class="p">,</span><span class="w">
+</span>                <span class="n">line</span><span class="o">.</span><span class="n">recurring_rule_type</span><span class="p">,</span> <span class="n">line</span><span class="o">.</span><span class="n">recurring_interval</span><span class="p">,</span> <span class="n">max_date_end</span><span class="o">=</span><span class="n">line</span><span class="o">.</span><span class="n">date_end</span><span class="p">,</span><span class="w">
+</span>            <span class="p">)</span><span class="w">
+</span>    <span class="n">updates</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">line</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;recurring_next_date&quot;</span><span class="p">,</span> <span class="n">new_rnd</span><span class="p">))</span><span class="w">
+
+</span><span class="c1"># --- 1c: close past-date lines ---</span><span class="w">
+</span><span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">fix_1c</span><span class="p">:</span><span class="w">
+</span>    <span class="n">updates</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">line</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;date_end&quot;</span><span class="p">,</span> <span class="n">line</span><span class="o">.</span><span class="n">last_date_invoiced</span><span class="p">))</span><span class="w">
+</span>    <span class="n">updates</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">line</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s2">&quot;is_auto_renew&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">))</span><span class="w">
+
+</span><span class="c1"># --- Apply via SQL (DRY_RUN = False) ---</span><span class="w">
+</span><span class="k">if</span> <span class="ow">not</span> <span class="n">DRY_RUN</span><span class="p">:</span><span class="w">
+</span>    <span class="n">cr</span> <span class="o">=</span> <span class="n">env</span><span class="o">.</span><span class="n">cr</span><span class="w">
+</span>    <span class="n">table</span> <span class="o">=</span> <span class="n">ContractLine</span><span class="o">.</span><span class="n">_table</span><span class="w">
+</span>    <span class="c1"># Group by line for a single UPDATE per line, converting False to None</span><span class="w">
+</span>    <span class="n">by_line</span> <span class="o">=</span> <span class="p">{}</span><span class="w">
+</span>    <span class="k">for</span> <span class="n">line_id</span><span class="p">,</span> <span class="n">field</span><span class="p">,</span> <span class="n">new_val</span> <span class="ow">in</span> <span class="n">updates</span><span class="p">:</span><span class="w">
+</span>        <span class="n">by_line</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">line_id</span><span class="p">,</span> <span class="p">{})[</span><span class="n">field</span><span class="p">]</span> <span class="o">=</span> <span class="n">new_val</span><span class="w">
+</span>    <span class="k">for</span> <span class="n">line_id</span><span class="p">,</span> <span class="n">fields_vals</span> <span class="ow">in</span> <span class="n">by_line</span><span class="o">.</span><span class="n">items</span><span class="p">():</span><span class="w">
+</span>        <span class="n">set_clause</span> <span class="o">=</span> <span class="s2">&quot;, &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">f</span><span class="si">}</span><span class="s2"> = %s&quot;</span> <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="n">fields_vals</span><span class="p">)</span><span class="w">
+</span>        <span class="n">values</span> <span class="o">=</span> <span class="p">[(</span><span class="n">v</span> <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">v</span><span class="p">,</span> <span class="nb">bool</span><span class="p">)</span> <span class="k">else</span> <span class="kc">None</span><span class="p">)</span> <span class="k">for</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">fields_vals</span><span class="o">.</span><span class="n">values</span><span class="p">()]</span><span class="w">
+</span>        <span class="n">values</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">line_id</span><span class="p">)</span><span class="w">
+</span>        <span class="n">cr</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;UPDATE </span><span class="si">{</span><span class="n">table</span><span class="si">}</span><span class="s2"> SET </span><span class="si">{</span><span class="n">set_clause</span><span class="si">}</span><span class="s2"> WHERE id = %s&quot;</span><span class="p">,</span> <span class="n">values</span><span class="p">)</span><span class="w">
+</span>    <span class="n">cr</span><span class="o">.</span><span class="n">commit</span><span class="p">()</span><span class="w">
+</span>    <span class="n">ContractLine</span><span class="o">.</span><span class="n">invalidate_model</span><span class="p">()</span><span class="w">
+</span>    <span class="n">env</span><span class="p">[</span><span class="s2">&quot;contract.contract&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">invalidate_model</span><span class="p">()</span><span class="w">
+</span>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Fixed </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">by_line</span><span class="p">)</span><span class="si">}</span><span class="s2"> lines.&quot;</span><span class="p">)</span><span class="w">
+
+</span><span class="k">if</span> <span class="n">DRY_RUN</span><span class="p">:</span><span class="w">
+</span>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;DRY-RUN: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">updates</span><span class="p">)</span><span class="si">}</span><span class="s2"> writes would be performed.&quot;</span><span class="p">)</span><span class="w">
+</span>    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Set DRY_RUN = False to apply.&quot;</span><span class="p">)</span>
+</pre>
+</div>
 <div class="section" id="known-issues-roadmap">
-<h2><a class="toc-backref" href="#toc-entry-3">Known issues / Roadmap</a></h2>
+<h2><a class="toc-backref" href="#toc-entry-4">Known issues / Roadmap</a></h2>
 <ul class="simple">
 <li>Recover states and others functional fields in Contracts.</li>
 <li>Add recurrence flag at template level.</li>
 </ul>
 </div>
 <div class="section" id="bug-tracker">
-<h2><a class="toc-backref" href="#toc-entry-4">Bug Tracker</a></h2>
+<h2><a class="toc-backref" href="#toc-entry-5">Bug Tracker</a></h2>
 <p>Bugs are tracked on <a class="reference external" href="https://github.com/OCA/contract/issues">GitHub Issues</a>.
 In case of trouble, please check there if your issue has already been reported.
 If you spotted it first, help us to smash it by providing a detailed and welcomed
@@ -452,16 +577,16 @@ If you spotted it first, help us to smash it by providing a detailed and welcome
 <p>Do not contact contributors directly about support or help with technical issues.</p>
 </div>
 <div class="section" id="credits">
-<h2><a class="toc-backref" href="#toc-entry-5">Credits</a></h2>
+<h2><a class="toc-backref" href="#toc-entry-6">Credits</a></h2>
 <div class="section" id="authors">
-<h3><a class="toc-backref" href="#toc-entry-6">Authors</a></h3>
+<h3><a class="toc-backref" href="#toc-entry-7">Authors</a></h3>
 <ul class="simple">
 <li>Tecnativa</li>
 <li>ACSONE SA/NV</li>
 </ul>
 </div>
 <div class="section" id="contributors">
-<h3><a class="toc-backref" href="#toc-entry-7">Contributors</a></h3>
+<h3><a class="toc-backref" href="#toc-entry-8">Contributors</a></h3>
 <ul>
 <li><p class="first">Angel Moya &lt;<a class="reference external" href="mailto:angel.moya&#64;domatix.com">angel.moya&#64;domatix.com</a>&gt;</p>
 </li>
@@ -500,7 +625,7 @@ If you spotted it first, help us to smash it by providing a detailed and welcome
 </ul>
 </div>
 <div class="section" id="maintainers">
-<h3><a class="toc-backref" href="#toc-entry-8">Maintainers</a></h3>
+<h3><a class="toc-backref" href="#toc-entry-9">Maintainers</a></h3>
 <p>This module is maintained by the OCA.</p>
 <a class="reference external image-reference" href="https://odoo-community.org">
 <img alt="Odoo Community Association" src="https://odoo-community.org/logo.png" />
