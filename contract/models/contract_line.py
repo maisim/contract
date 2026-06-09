@@ -644,9 +644,27 @@ class ContractLine(models.Model):
         # e.g.: _update_last_date_invoiced()
         for rec in self:
             last_date_invoiced = rec.next_period_date_end
+            # Compute recurring_next_date explicitly and write it in the same
+            # write as last_date_invoiced to guarantee atomic consistency.
+            # Relying on the computed field dependency chain alone would risk
+            # the cross-dependency (contract.recurring_next_date ↔
+            # line.recurring_next_date) leaving recurring_next_date stale
+            # and violating the _check_last_date_invoiced constraint.
+            if last_date_invoiced:
+                recurring_next_date = rec.get_next_invoice_date(
+                    last_date_invoiced + relativedelta(days=1),
+                    rec.recurring_invoicing_type,
+                    rec.recurring_invoicing_offset,
+                    rec.recurring_rule_type,
+                    rec.recurring_interval,
+                    max_date_end=rec.date_end,
+                )
+            else:
+                recurring_next_date = False
             rec.write(
                 {
                     "last_date_invoiced": last_date_invoiced,
+                    "recurring_next_date": recurring_next_date,
                 }
             )
 

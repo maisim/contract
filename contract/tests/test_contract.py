@@ -2416,3 +2416,28 @@ class TestContract(TestContractBase):
         self.contract3.contract_line_ids.recurring_next_date = fields.Date.today()
         invoice_id = self.contract3.recurring_create_invoice()
         self.assertEqual(invoice_id.invoice_line_ids[0].name, "Header for May Services")
+
+    def test_update_recurring_next_date_atomic_consistency(self):
+        """After _update_recurring_next_date, recurring_next_date must be
+        strictly greater than last_date_invoiced to satisfy the
+        _check_last_date_invoiced constraint."""
+        self.acct_line.recurring_rule_type = "monthly"
+        self.acct_line.recurring_invoicing_type = "pre-paid"
+        self.acct_line.date_start = "2018-01-01"
+        self.acct_line.date_end = False
+        self.acct_line.last_date_invoiced = False
+        self.acct_line.flush_recordset()
+        # Simulate the invoicing flow
+        self.acct_line._update_recurring_next_date()
+        self.acct_line.flush_recordset()
+        # After invoicing, recurring_next_date must be > last_date_invoiced
+        self.assertTrue(self.acct_line.last_date_invoiced)
+        self.assertTrue(self.acct_line.recurring_next_date)
+        self.assertGreater(
+            self.acct_line.recurring_next_date,
+            self.acct_line.last_date_invoiced,
+            "recurring_next_date must be strictly after last_date_invoiced",
+        )
+        # The constraint should not fire — doing a write to one of the
+        # constrained fields will trigger _check_last_date_invoiced
+        self.acct_line.write({"date_start": "2018-01-01"})  # should not raise
