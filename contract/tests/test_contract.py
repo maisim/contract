@@ -2441,3 +2441,134 @@ class TestContract(TestContractBase):
         # The constraint should not fire — doing a write to one of the
         # constrained fields will trigger _check_last_date_invoiced
         self.acct_line.write({"date_start": "2018-01-01"})  # should not raise
+
+    def test_recurring_create_invoice_no_validation_error_prepaid(self):
+        """Regression test: two consecutive monthly pre-paid invoicing cycles
+        must not raise ValidationError from _check_last_date_invoiced.
+
+        This reproduces the 12.0→16.0 regression where recurring_next_date was
+        left stale after writing last_date_invoiced, causing the constraint
+        «recurring_next_date <= last_date_invoiced» to fire.
+        """
+        self.acct_line.write(
+            {
+                "recurring_rule_type": "monthly",
+                "recurring_invoicing_type": "pre-paid",
+                "date_start": "2020-01-01",
+                "date_end": False,
+                "last_date_invoiced": False,
+            }
+        )
+        # First invoice — must not raise
+        self.contract.recurring_create_invoice()
+        last_1 = self.acct_line.last_date_invoiced
+        next_1 = self.acct_line.recurring_next_date
+        self.assertTrue(last_1, "last_date_invoiced must be set after first invoice")
+        self.assertTrue(next_1, "recurring_next_date must be set after first invoice")
+        self.assertGreater(
+            next_1,
+            last_1,
+            "recurring_next_date must be strictly after last_date_invoiced (1st cycle)",
+        )
+        # Second invoice — must not raise ValidationError
+        self.contract.recurring_create_invoice()
+        last_2 = self.acct_line.last_date_invoiced
+        next_2 = self.acct_line.recurring_next_date
+        self.assertGreater(
+            last_2,
+            last_1,
+            "last_date_invoiced must advance after second invoice",
+        )
+        self.assertTrue(next_2, "recurring_next_date must be set after second invoice")
+        self.assertGreater(
+            next_2,
+            last_2,
+            "recurring_next_date must be strictly after last_date_invoiced (2nd cycle)",
+        )
+
+    def test_recurring_create_invoice_no_validation_error_postpaid(self):
+        """Regression test: two consecutive monthly post-paid invoicing cycles
+        must not raise ValidationError from _check_last_date_invoiced."""
+        self.acct_line.write(
+            {
+                "recurring_rule_type": "monthly",
+                "recurring_invoicing_type": "post-paid",
+                "date_start": "2020-01-01",
+                "date_end": False,
+                "last_date_invoiced": False,
+            }
+        )
+        # First invoice — must not raise
+        self.contract.recurring_create_invoice()
+        last_1 = self.acct_line.last_date_invoiced
+        next_1 = self.acct_line.recurring_next_date
+        self.assertTrue(last_1)
+        self.assertTrue(next_1)
+        self.assertGreater(next_1, last_1)
+        # Second invoice — must not raise ValidationError
+        self.contract.recurring_create_invoice()
+        last_2 = self.acct_line.last_date_invoiced
+        next_2 = self.acct_line.recurring_next_date
+        self.assertGreater(last_2, last_1)
+        self.assertTrue(next_2)
+        self.assertGreater(next_2, last_2)
+
+    def test_recurring_create_invoice_no_validation_error_monthlylastday(self):
+        """Regression test: monthlylastday rule must not raise ValidationError
+        and must compute recurring_next_date with the correct offset."""
+        self.acct_line.write(
+            {
+                "recurring_rule_type": "monthlylastday",
+                "recurring_invoicing_type": "pre-paid",
+                "date_start": "2020-01-05",
+                "date_end": False,
+                "last_date_invoiced": False,
+            }
+        )
+        # First invoice
+        self.contract.recurring_create_invoice()
+        last_1 = self.acct_line.last_date_invoiced
+        next_1 = self.acct_line.recurring_next_date
+        self.assertTrue(last_1)
+        self.assertTrue(next_1)
+        self.assertGreater(
+            next_1,
+            last_1,
+            "recurring_next_date must be strictly after last_date_invoiced (monthlylastday)",
+        )
+        # Second invoice — must not raise
+        self.contract.recurring_create_invoice()
+        last_2 = self.acct_line.last_date_invoiced
+        next_2 = self.acct_line.recurring_next_date
+        self.assertGreater(last_2, last_1)
+        self.assertTrue(next_2)
+        self.assertGreater(next_2, last_2)
+
+    def test_update_recurring_next_date_false_next_period_date_end(self):
+        """Guard test: when next_period_date_end is False (line fully invoiced /
+        out-of-period), _update_recurring_next_date must not raise TypeError
+        and must write last_date_invoiced without error.
+
+        Without the guard, ``last_date_invoiced + relativedelta(days=1)`` would
+        raise TypeError because False + relativedelta is not supported.
+        """
+        self.acct_line.write(
+            {
+                "recurring_rule_type": "monthly",
+                "recurring_invoicing_type": "pre-paid",
+                # last_date_invoiced == date_end → next_period_date_start > date_end
+                # → next_period_date_end is False (line is fully invoiced)
+                "date_start": "2020-01-01",
+                "date_end": "2020-01-31",
+                "last_date_invoiced": "2020-01-31",
+            }
+        )
+        # next_period_date_end should be False (next_period_date_start > date_end)
+        self.assertFalse(
+            self.acct_line.next_period_date_end,
+            "next_period_date_end must be False for a fully-invoiced line",
+        )
+        # Must not raise TypeError (False + relativedelta crashes without the guard)
+        self.acct_line._update_recurring_next_date()
+        # last_date_invoiced is written to False (next_period_date_end was False)
+        self.assertFalse(self.acct_line.last_date_invoiced)

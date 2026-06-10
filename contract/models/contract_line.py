@@ -644,14 +644,16 @@ class ContractLine(models.Model):
         # e.g.: _update_last_date_invoiced()
         for rec in self:
             last_date_invoiced = rec.next_period_date_end
-            # Compute recurring_next_date explicitly and write it in the same
-            # write as last_date_invoiced to guarantee atomic consistency.
-            # Relying on the computed field dependency chain alone would risk
-            # the cross-dependency (contract.recurring_next_date ↔
-            # line.recurring_next_date) leaving recurring_next_date stale
-            # and violating the _check_last_date_invoiced constraint.
+            vals = {"last_date_invoiced": last_date_invoiced}
+            # Compute recurring_next_date explicitly and write it together with
+            # last_date_invoiced to guarantee atomic consistency. Relying on the
+            # computed-field dependency chain alone leaves recurring_next_date
+            # stale (last_date_invoiced is not part of its @api.depends), which
+            # violates the _check_last_date_invoiced constraint after invoicing.
+            # Guard against next_period_date_end being False (fully invoiced /
+            # out-of-period line) to avoid a TypeError on the date arithmetic.
             if last_date_invoiced:
-                recurring_next_date = rec.get_next_invoice_date(
+                vals["recurring_next_date"] = rec.get_next_invoice_date(
                     last_date_invoiced + relativedelta(days=1),
                     rec.recurring_invoicing_type,
                     rec.recurring_invoicing_offset,
@@ -659,14 +661,7 @@ class ContractLine(models.Model):
                     rec.recurring_interval,
                     max_date_end=rec.date_end,
                 )
-            else:
-                recurring_next_date = False
-            rec.write(
-                {
-                    "last_date_invoiced": last_date_invoiced,
-                    "recurring_next_date": recurring_next_date,
-                }
-            )
+            rec.write(vals)
 
     def _delay(self, delay_delta):
         """
