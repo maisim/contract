@@ -104,7 +104,8 @@ def migrate(cr, version):
             "following lines manually:\n%s",
             len(case_b_rows),
             "\n".join(
-                "  id=%d name=%r date_end=%s last_date_invoiced=%s" % row
+                f"  id={row[0]} name={row[1]!r} date_end={row[2]}"
+                f" last_date_invoiced={row[3]}"
                 for row in case_b_rows
             ),
         )
